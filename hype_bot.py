@@ -34,7 +34,6 @@ CUTOFF_TIME = 270  # 4:30 minutes = 270 seconds (stop placing orders)
 WINDOW_DURATION = 300  # 5 minutes = 300 seconds
 
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
-CLOB_PRICE_API = "https://clob.polymarket.com/price"
 CLOB_ORDER_API = "https://clob.polymarket.com/orders"
 
 # ============================================================================
@@ -106,70 +105,118 @@ bot_state = BotState()
 # MARKET DISCOVERY - HYPE PAIR
 # ============================================================================
 
+def _parse_market_from_event(event):
+    """Extract the UP/DOWN market from an event object."""
+    for m in (event.get('markets') or []):
+        outcomes_raw = m.get('outcomes', [])
+        if isinstance(outcomes_raw, str):
+            try:
+                outcomes = json.loads(outcomes_raw)
+            except Exception:
+                outcomes = []
+        else:
+            outcomes = outcomes_raw or []
+        has_up   = any('up'   in str(o).lower() for o in outcomes)
+        has_down = any('down' in str(o).lower() for o in outcomes)
+        if has_up and has_down:
+            return m
+    return None
+
+
 def discover_hype_market():
     """
-    Discover current Hype market using dual approach:
-    1. Try /events endpoint with active=true
-    2. Fall back to /markets endpoint
-    
-    Returns market data with token IDs and current prices
+    Discover current Hype 5-min market using the correct Gamma API approach:
+
+    APPROACH 1 (preferred) — slug-based event lookup:
+        GET /events?slug=hype-300
+        The HYPE 5-minute window events use the slug pattern  hype-300
+        (300 = window size in seconds).  We also try  hype-5  and  hype
+        as fallbacks in case the slug naming shifts.
+
+    APPROACH 2 — active event search filtered server-side:
+        GET /events?tag=hype&active=true&limit=20
+        Walk results and look for the UP/DOWN pair.
+
+    APPROACH 3 — markets endpoint with tag/ticker filter:
+        GET /markets?search=hype&active=true&limit=20
+
+    Returns market data dict with token IDs, or None.
     """
-    # Try to find any active Hype market
     print("[DISCOVERY] Searching for Hype pair market...")
-    
+
     market = None
-    
-    # ===== APPROACH 1: Try /events endpoint =====
-    try:
-        response = requests.get(
-            f"{GAMMA_API_BASE}/events",
-            params={'search': 'hype', 'active': 'true'},
-            timeout=10
-        )
-        data = response.json()
-        
-        if isinstance(data, list) and len(data) > 0:
-            # Look for Hype market with UP/DOWN outcomes
-            for event in data:
-                if event.get('markets') and len(event['markets']) > 0:
-                    for m in event['markets']:
-                        outcomes_raw = m.get('outcomes', [])
-                        if isinstance(outcomes_raw, str):
-                            try:
-                                outcomes = json.loads(outcomes_raw)
-                            except:
-                                outcomes = outcomes_raw
-                        else:
-                            outcomes = outcomes_raw
-                        
-                        # Check if it's UP/DOWN market
-                        has_up = any('up' in str(o).lower() for o in outcomes)
-                        has_down = any('down' in str(o).lower() for o in outcomes)
-                        
-                        if has_up and has_down:
-                            market = m
-                            print("[DISCOVERY] ✓ Found via /events endpoint")
-                            break
-                if market:
-                    break
-    except Exception as e:
-        print(f"[DISCOVERY] /events search failed: {str(e)[:50]}")
-    
-    # ===== APPROACH 2: Try /markets endpoint with hype search =====
-    if not market:
+
+    # ===== APPROACH 1: known slug patterns =====
+    slug_candidates = ['hype-300', 'hype-5', 'hype']
+    for slug in slug_candidates:
+        if market:
+            break
         try:
-            response = requests.get(
-                f"{GAMMA_API_BASE}/markets",
-                params={'search': 'hype'},
+            resp = requests.get(
+                f"{GAMMA_API_BASE}/events",
+                params={'slug': slug},
                 timeout=10
             )
-            data = response.json()
-            
-            if isinstance(data, list) and len(data) > 0:
-                market = data[0]
-                print("[DISCOVERY] ✓ Found via /markets endpoint")
+            resp.raise_for_status()
+            data = resp.json()
+            events = data if isinstance(data, list) else [data]
+            for event in events:
+                m = _parse_market_from_event(event)
+                if m:
+                    market = m
+                    print(f"[DISCOVERY] ✓ Found via slug '{slug}'")
+                    break
         except Exception as e:
-            print(f"[DISCOVERY] /markets search failed: {str(e)[:50]}")
+            print(f"[DISCOVERY] slug '{slug}' failed: {str(e)[:60]}")
+
+    # ===== APPROACH 2: tag/active search on /events =====
+    if not market:
+        try:
+            resp = requests.get(
+                f"{GAMMA_API_BASE}/events",
+                params={'tag': 'hype', 'active': 'true', 'limit': '20'},
+                timeout=10
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            events = data if isinstance(data, list) else []
+            for event in events:
+                m = _parse_market_from_event(event)
+                if m:
+                    market = m
+                    print("[DISCOVERY] ✓ Found via /events?tag=hype")
+                    break
+        except Exception as e:
+            print(f"[DISCOVERY] /events tag search failed: {str(e)[:60]}")
+
+    # ===== APPROACH 3: /markets search =====
+    if not market:
+        try:
+            resp = requests.get(
+                f"{GAMMA_API_BASE}/markets",
+                params={'search': 'hype', 'active': 'true', 'limit': '20'},
+                timeout=10
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            markets = data if isinstance(data, list) else []
+            for m in markets:
+                outcomes_raw = m.get('outcomes', [])
+                if isinstance(outcomes_raw, str):
+                    try:
+                        outcomes = json.loads(outcomes_raw)
+                    except Exception:
+                        outcomes = []
+                else:
+                    outcomes = outcomes_raw or []
+                has_up   = any('up'   in str(o).lower() for o in outcomes)
+                has_down = any('down' in str(o).lower() for o in outcomes)
+                if has_up and has_down:
+                    market = m
+                    print("[DISCOVERY] ✓ Found via /markets search")
+                    break
+        except Exception as e:
+            print(f"[DISCOVERY] /markets search failed: {str(e)[:60]}")
     
     if not market:
         print("[DISCOVERY] ✗ No Hype market found")
@@ -228,28 +275,43 @@ def discover_hype_market():
 
 def get_bid_ask_prices(asset_side, token_id):
     """
-    Fetch live BID and ASK prices for a token
+    Fetch LIVE BID and ASK prices from the CLOB orderbook.
+
+    The old approach used /price?side=BUY/SELL which returns a *mid/last-trade*
+    price and never updates between trades — that is why prices appeared stuck.
+
+    Correct approach: GET /book?token_id=<id>
+    The orderbook response has:
+        bids: [ {price, size}, ... ]  sorted descending  → best bid = bids[0]
+        asks: [ {price, size}, ... ]  sorted ascending   → best ask = asks[0]
+
     Returns: {'bid': float, 'ask': float} or None
     """
     try:
-        # Fetch BID price
-        resp_bid = requests.get(
-            f"{CLOB_PRICE_API}?token_id={token_id}&side=BUY",
+        resp = requests.get(
+            f"https://clob.polymarket.com/book",
+            params={'token_id': token_id},
             timeout=5
         )
-        bid_price = float(resp_bid.json().get('price', 0))
-        
-        # Fetch ASK price
-        resp_ask = requests.get(
-            f"{CLOB_PRICE_API}?token_id={token_id}&side=SELL",
-            timeout=5
-        )
-        ask_price = float(resp_ask.json().get('price', 0))
-        
-        return {'bid': bid_price, 'ask': ask_price}
-    
+        resp.raise_for_status()
+        book = resp.json()
+
+        bids = book.get('bids') or []
+        asks = book.get('asks') or []
+
+        if not bids or not asks:
+            # Orderbook empty (no liquidity yet) — return None so the caller skips
+            print(f"[PRICES] {asset_side}: empty orderbook for {token_id[:16]}...")
+            return None
+
+        # bids are sorted best-first (highest price), asks lowest-first
+        best_bid = float(bids[0]['price'])
+        best_ask = float(asks[0]['price'])
+
+        return {'bid': best_bid, 'ask': best_ask}
+
     except Exception as e:
-        print(f"[PRICES] Error fetching prices for {token_id[:16]}...: {e}")
+        print(f"[PRICES] Error fetching orderbook for {asset_side} {token_id[:16]}...: {e}")
         return None
 
 # ============================================================================
@@ -459,22 +521,37 @@ def run_trading_loop():
             
             # === WINDOW TIMING ===
             elapsed = get_window_time_elapsed()
-            
+            current_window_ts = get_current_window_ts()
+
             with bot_state.lock:
                 bot_state.window_info['time_in_window'] = elapsed
-            
-            # === CHECK IF WINDOW ENDED ===
+                prev_window_ts = bot_state.window_info.get('current_window_ts', 0)
+
+            # === CHECK IF WINDOW ROLLED OVER (new 5-min epoch) ===
+            # The HYPE market slug changes each 300-second window, so we must
+            # clear token_ids to force a fresh discovery on the new slug.
+            if prev_window_ts != 0 and current_window_ts != prev_window_ts:
+                print(f"\n[WINDOW] New 5-min window — clearing market and re-discovering...")
+                cancel_unfilled_orders()
+                settle_filled_orders()
+                with bot_state.lock:
+                    bot_state.market_data['hype']['token_ids'] = {}
+                    bot_state.active_orders = {}
+                    bot_state.window_info['current_window_ts'] = current_window_ts
+                    bot_state.window_info['start_time'] = time.time()
+                    bot_state.window_info['status'] = 'loading'
+                continue
+
+            # === CHECK IF WINDOW ENDED (fallback timer) ===
             if is_window_ended():
                 print(f"\n[WINDOW] Window ended at {elapsed:.1f}s")
                 cancel_unfilled_orders()
                 settle_filled_orders()
-                
-                # Reset for next window
                 with bot_state.lock:
+                    bot_state.market_data['hype']['token_ids'] = {}
                     bot_state.window_info['start_time'] = time.time()
                     bot_state.active_orders = {}
-                    bot_state.window_info['status'] = 'ready'
-                
+                    bot_state.window_info['status'] = 'loading'
                 continue
             
             # === FETCH PRICES ===
