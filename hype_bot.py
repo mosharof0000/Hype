@@ -29,7 +29,7 @@ PLACE_ORDER_INTERVAL = 10  # Seconds between placing/refreshing orders
 CUTOFF_TIME = 270  # 4:30 minutes = 270 seconds (stop placing orders)
 WINDOW_DURATION = 300  # 5 minutes = 300 seconds
 
-# Target Hype 5m Event ID from URL
+# Target Hype 5m Event ID from your URL
 EVENT_ID = "1779714000"
 
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
@@ -134,7 +134,7 @@ def fetch_live_clob_bid(token_id):
             book_data = response.json()
             bids = book_data.get("bids", [])
             if bids and len(bids) > 0:
-                # Top bid is always the first item in the orderbook
+                # Top bid is always the first item in the orderbook array
                 return float(bids[0].get("price", 0.0))
     except Exception as e:
         print(f"[ERROR] Error pulling orderbook for token {token_id}: {e}")
@@ -165,11 +165,11 @@ def run_trading_loop():
                 # Check if a new 5-minute cycle has rotated
                 if bot_state.current_market_id != previous_market_id:
                     print(f"\n[ROTATION] New Market Detected: {bot_state.current_market_title} ({bot_state.current_market_id})")
-                    # Cancel pending orders from the prior window
+                    # Clear pending orders from prior window
                     bot_state.orders = []
                     previous_market_id = bot_state.current_market_id
 
-                # Safely unpack token IDs (handle stringified lists or native lists)
+                # Safely unpack token IDs (handle stringified lists or native arrays)
                 token_ids_raw = active_market.get("clobTokenIds", [])
                 if isinstance(token_ids_raw, str):
                     try:
@@ -191,7 +191,7 @@ def run_trading_loop():
                     if bot_state.up_bid > 0:
                         bot_state.up_target_price = bot_state.up_bid + ORDER_OFFSET
                     else:
-                        bot_state.up_target_price = 0.50 # Default baseline fallback if book is momentarily empty
+                        bot_state.up_target_price = 0.50  # Fallback baseline if order book is empty
 
                     if bot_state.down_bid > 0:
                         bot_state.down_target_price = bot_state.down_bid + ORDER_OFFSET
@@ -207,7 +207,6 @@ def run_trading_loop():
             if time_elapsed < CUTOFF_TIME:
                 if current_time_ms - last_order_time >= PLACE_ORDER_INTERVAL:
                     if bot_state.up_target_price > 0 and bot_state.down_target_price > 0:
-                        # Clear old un-filled orders, replace with updated tier prices
                         bot_state.orders = []
                         
                         # Generate UP Layer Order
@@ -236,7 +235,6 @@ def run_trading_loop():
                 # Cutoff achieved; clear out open order logs to simulate structural cancellation
                 if bot_state.orders:
                     print(f"[CUTOFF] Reached {time_elapsed}s. Automatically purging unfilled orders.")
-                    # In a real environment, you execute order cancellation payload against /orders endpoint here
                     bot_state.orders = []
 
             time.sleep(1)
@@ -286,7 +284,7 @@ DASHBOARD_HTML = """
             <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 shadow-lg">
                 <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Window Counter</p>
                 <div class="flex items-baseline space-x-2 mt-1">
-                    <p class="text-2xl font-bold text-yellow-400 id="timer">00:00</p>
+                    <p class="text-2xl font-bold text-yellow-400" id="timer">00:00</p>
                     <p class="text-xs text-gray-400">/ 05:00</p>
                 </div>
             </div>
@@ -342,17 +340,14 @@ DASHBOARD_HTML = """
                 const res = await fetch('/api/state');
                 const data = await res.json();
 
-                // Hydrate core metrics cards
                 document.getElementById('balance').textContent = `$${data.balance.toFixed(2)}`;
                 document.getElementById('pnl').textContent = `${data.pnl >= 0 ? '+' : ''}$${data.pnl.toFixed(4)}`;
                 document.getElementById('pnl').className = `text-2xl font-bold mt-1 ${data.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`;
                 
-                // Track standard minute:second notation
                 const mins = Math.floor(data.time_elapsed_in_window / 60).toString().padStart(2, '0');
                 const secs = (data.time_elapsed_in_window % 60).toString().padStart(2, '0');
                 document.getElementById('timer').textContent = `${mins}:${secs}`;
                 
-                // Cutoff status text rendering
                 const cutoffLabel = document.getElementById('cutoff-status');
                 if (data.time_elapsed_in_window >= 270) {
                     cutoffLabel.textContent = "CUTOFF TRIGGERED - Post-processing/Cancelling Pending Orders";
@@ -365,7 +360,6 @@ DASHBOARD_HTML = """
                 document.getElementById('market-id').textContent = data.current_market_title;
                 document.getElementById('market-id').title = data.current_market_id;
 
-                // Hydrate token detail matrices
                 document.getElementById('up-token').textContent = data.up_token_id;
                 document.getElementById('up-bid').textContent = `$${data.up_bid.toFixed(4)}`;
                 document.getElementById('up-target').textContent = `$${data.up_target_price.toFixed(4)}`;
@@ -374,7 +368,6 @@ DASHBOARD_HTML = """
                 document.getElementById('down-bid').textContent = `$${data.down_bid.toFixed(4)}`;
                 document.getElementById('down-target').textContent = `$${data.down_target_price.toFixed(4)}`;
 
-                // Render Active Orders Table Row Blocks
                 const ordersTable = document.getElementById('orders-table-body');
                 if (data.orders.length === 0) {
                     ordersTable.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-gray-500 italic">No orders currently resting in book for this block segment</td></tr>`;
@@ -396,7 +389,6 @@ DASHBOARD_HTML = """
             }
         }
 
-        // Initialize execution grid update interval
         refreshDashboardMetrics();
         setInterval(refreshDashboardMetrics, 1000);
     </script>
@@ -413,7 +405,6 @@ def api_state():
     return jsonify(bot_state.to_dict())
 
 def run_dashboard_server(port=5000):
-    """Fires up local telemetry server loop"""
     print(f"[DASHBOARD] Routing telemetry engine outward to http://localhost:{port}")
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
@@ -421,7 +412,6 @@ def run_dashboard_server(port=5000):
 # APPLICATION ROUTER ENTRYPOINT
 # ===========================================================================
 if __name__ == '__main__':
-    # Initialize UI dashboard thread loop inside background pipeline
     dashboard_thread = threading.Thread(
         target=run_dashboard_server,
         kwargs={'port': int(os.getenv('PORT', 5000))},
@@ -429,7 +419,6 @@ if __name__ == '__main__':
     )
     dashboard_thread.start()
     
-    # Initialize core algorithmic trading execution on main process thread
     try:
         run_trading_loop()
     except KeyboardInterrupt:
